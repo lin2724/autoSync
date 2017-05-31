@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import thread
 import time
 import signal
 
@@ -75,6 +76,10 @@ def check_change(dir_cb, ret_list):
     pass
 
 
+def check_new_files(dir_cb, ret_list):
+    pass
+
+
 def test_check():
     if len(sys.argv) == 2:
         check_dir = sys.argv[1]
@@ -139,6 +144,7 @@ class SyncHandle:
         self.thread_lock = threading.Lock()
         self.ByPyHandle = ByPy
         self.LogHandle = Log(os.path.join(os.getcwd(), __file__+'.log'))  # log int cur work path
+        self.set_tmp_folder = os.path.join(os.getcwd(), __file__+'_tmp')
 
         self.folder_watch_list_cbs = list()
         self.upload_complete_cnt = 0
@@ -287,31 +293,32 @@ class SyncHandle:
     def get_upload_task(self):
         self.thread_lock.acquire()
         ret_folder = ''
-        ret_task_list = list()
-        once_limit = 20
+        ret_file_list = list()
+        set_once_limit = 20
         offset = 0
         for idx in range(len(self.task_list_queue)):
             #  clear empty task-queue
-            if not len(self.task_list_queue[idx - offset]):
+            if not len(self.task_list_queue[idx - offset]['files']):
                 self.task_list_queue.pop(idx - offset)
                 offset += 1
             else:
                 file_cnt = len(self.task_list_queue[idx - offset]['files'])
-                if once_limit > file_cnt:
-                    once_limit = file_cnt
-
+                if set_once_limit > file_cnt:
+                    task_file_cnt = file_cnt
+                else:
+                    task_file_cnt = file_cnt
                 # collect files task
                 ret_folder = self.task_list_queue[idx - offset]['dir_path']
                 offset_f = 0
-                for idx_f in range(once_limit):
-                    ret_task_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
+                for idx_f in range(task_file_cnt):
+                    ret_file_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
                     self.task_list_queue[idx - offset]['files'].pop(idx_f - offset_f)
                     offset_f += 1
                 break
 
             pass
         self.thread_lock.release()
-        return ret_task_list, ret_folder
+        return ret_file_list, ret_folder
         pass
 
     def push_back_task_upload(self, task_tup):
@@ -332,30 +339,42 @@ class SyncHandle:
 
     def thread_guide(self):
         while True:
-            if self.set_status == 2:
-                self.LogHandle.log('Thread thread-guide stop..')
-                return
             alive_cnt = 0
             for idx, pro in enumerate(self.thread_list_pro):
                 if not pro.is_alive() and not self.set_status:
                     self.LogHandle.log('One thread die!!')
                     self.thread_list_pro.pop(idx)
-                    pro = threading.Thread(target=self.thread_do_upload)
-                    pro.start()
-                    self.thread_list_pro.append(pro)
+                    #  check if we need to quit..
+                    if not self.set_status:
+                        pro = threading.Thread(target=self.thread_do_upload)
+                        pro.start()
+                        self.thread_list_pro.append(pro)
                     break
                 else:
                     alive_cnt += 1
-            self.LogHandle.log('Alive thread Count [%d]' % alive_cnt)
-            if self.set_status == 2 and alive_cnt == 0:
-                self.LogHandle.log('All thread quit.. ')
-                return
-            time.sleep(10)
+            if self.set_status == 2:
+                self.LogHandle.log('thread-guide stop.. ')
+                thread.exit()
+            if alive_cnt == self.set_thread_max:
+                time.sleep(10)
+            else:
+                self.LogHandle.log('Alive thread Count [%d]' % alive_cnt)
+                time.sleep(0.1)
+        pass
+
+    def move_to_tmp(self, file_path):
+        if not os.path.exists(self.set_tmp_folder):
+            os.mkdir(self.set_tmp_folder)
+        file_name = os.path.basename(file_path)
+        dst_path = os.path.join(self.set_tmp_folder, file_name)
+        os.rename(file_path, dst_path)
+        return dst_path
         pass
 
     def thread_collect_task(self):
-        min_check_len = 40
+        min_check_len = 200
         change_list = list()
+        cur_base_folder = ''
         while True:
             self.thread_lock.acquire()
             exist_cnt = 0
@@ -369,8 +388,10 @@ class SyncHandle:
                         check_change(folder_cb, change_list)
                         if len(change_list):
                             # use watch folder as base folder!
-                            ret_folder = folder_cb['dir_path'][:]
                             # print 'folder_cb path [%s]' % ret_folder
+                            cur_base_folder = folder_cb['dir_path']
+                            if cur_base_folder[:-1] == '/' or cur_base_folder[:-1] == '\\':
+                                cur_base_folder = cur_base_folder[:-1]
                             break
                 offset = 0
                 for idx in range(len(change_list)):
@@ -379,12 +400,22 @@ class SyncHandle:
                     for obj in objs:
                         full_path = os.path.join(change_list[idx - offset], obj)
                         if os.path.isfile(full_path):
-                            file_list.append(full_path)
+                            tmp_path = self.move_to_tmp(full_path)
+                            file_list.append(tmp_path)
                             have_new_file = True
                     if not have_new_file:
                         change_list.pop(idx - offset)
                         offset += 1
-                    if not len(file_list):
+                    if len(file_list):
+                        detail_folder = change_list[idx - offset][:]
+                        if len(cur_base_folder) > len(detail_folder):
+                            self.LogHandle.log('ERROR: Base folder [%s], detail_folder[%s]' % (cur_base_folder, detail_folder))
+                        else:
+                            detail_path = detail_folder[len(cur_base_folder):]
+                            if detail_path[:1] == '/' or detail_path[:1] == '\\':
+                                detail_path = detail_path[1:]
+                            base_dir = os.path.basename(cur_base_folder)
+                            ret_folder = os.path.join(base_dir, detail_path)
                         break
                     pass
             if len(file_list):
@@ -392,13 +423,14 @@ class SyncHandle:
                 queue_dict['dir_path'] = ret_folder
                 queue_dict['files'] = file_list
                 self.task_list_queue.append(queue_dict)
-                print 'add queue to list [%s]' % ret_folder
+                print 'add queue to list, folder [%s], cnt [%d]' % (ret_folder, len(file_list))
             else:
-                print 'no new files to update cur queue [%d], filescnt [%d]' % (len(self.task_list_queue), exist_cnt)
+                print 'no new files to update cur queue [%d], file_cnt [%d]' % (len(self.task_list_queue), exist_cnt)
+                # print change_list
             self.thread_lock.release()
             if self.set_status == 2:
                 self.LogHandle.log('Thread collect stop..')
-                return
+                thread.exit()
             time.sleep(5)
         pass
 
@@ -407,22 +439,23 @@ class SyncHandle:
             file_size = 0
             time.sleep(1)
             file_path_list, up_folder = self.get_upload_task()
-            # self.LogHandle.log('upfolder %s' % up_folder)
             if not len(file_path_list):
                 print 'get no file to process..'
             for file_path in file_path_list:
                 if self.set_status == 2:
                     self.LogHandle.log('Thread upload stop..')
-                    return
+                    thread.exit()
                 if up_folder[:-1] == '\\' or up_folder[:-1] == '/':
                     up_folder = up_folder[:-1]
-                remote_folder = os.path.basename(up_folder)
-                local_short_path = file_path[len(up_folder):]
-                if local_short_path[:1] == '\\' or up_folder[:1] == '/':
-                    local_short_path = local_short_path[1:]
+                # remote_folder = os.path.basename(up_folder)
+                # local_short_path = file_path[len(up_folder):]
+                remote_folder = up_folder
+                local_file_name = os.path.basename(file_path)
+                # if local_short_path[:1] == '\\' or up_folder[:1] == '/':
+                #     local_short_path = local_short_path[1:]
                 # self.LogHandle.log('remote_folder %s' % remote_folder)
                 # self.LogHandle.log('local_short_path %s ' % local_short_path)
-                remote_file_path = os.path.join(remote_folder, local_short_path)
+                remote_file_path = os.path.join(remote_folder, local_file_name)
                 if os.path.exists(file_path):
                     stat = os.stat(file_path)
                     file_size = stat.st_size
@@ -437,6 +470,9 @@ class SyncHandle:
                     self.LogHandle.log('File not exist! [%s]' % file_path)
             del file_path_list
             del up_folder
+            if self.set_status == 2:
+                self.LogHandle.log('Thread upload stop..')
+                thread.exit()
             pass
 
     def _get_folder_files(self, folder_path):
