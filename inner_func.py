@@ -294,6 +294,7 @@ class SyncHandle:
         min_check_len = 200
         change_list = list()
         cur_base_folder = ''
+        self.load_task_from_tmp()
         while True:
             self.thread_lock.acquire()
             exist_cnt = 0
@@ -319,7 +320,7 @@ class SyncHandle:
                     for obj in objs:
                         full_path = os.path.join(change_list[idx - offset], obj)
                         if os.path.isfile(full_path):
-                            tmp_path = self.move_to_tmp(full_path)
+                            tmp_path = self.move_to_tmp(full_path, cur_base_folder)
                             file_list.append(tmp_path)
                             have_new_file = True
                     if not have_new_file:
@@ -335,6 +336,7 @@ class SyncHandle:
                                 detail_path = detail_path[1:]
                             base_dir = os.path.basename(cur_base_folder)
                             ret_folder = os.path.join(base_dir, detail_path)
+                            ret_folder = self.set_tmp_folder
                         break
                     pass
             if len(file_list):
@@ -360,7 +362,6 @@ class SyncHandle:
         set_once_limit = 20
         offset = 0
         #  load task which is not finished last time..
-        self.load_task_from_tmp()
         for idx in range(len(self.task_list_queue)):
             #  clear empty task-queue
             if not len(self.task_list_queue[idx - offset]['files']):
@@ -386,7 +387,7 @@ class SyncHandle:
         return ret_file_list, ret_folder
         pass
 
-    def move_to_tmp(self, file_path):
+    def move_to_tmp_bk(self, file_path):
         if not os.path.exists(self.set_tmp_folder):
             os.mkdir(self.set_tmp_folder)
         file_name = os.path.basename(file_path)
@@ -405,12 +406,24 @@ class SyncHandle:
             self._mkdir_recursive(pardir)
         os.mkdir(path)
 
+    def _remove_dir_recursive(self, path):
+        if os.path.exists(path):
+            items = os.listdir(path)
+            for item in items:
+                full_path = os.path.join(path, item)
+                if os.path.isfile(full_path):
+                    return False
+                if not self._remove_dir_recursive(full_path):
+                    return False
+            return True
+
     def move_to_tmp(self, file_path, base_folder):
         if len(file_path) < len(base_folder):
             self.LogHandle.log('ERROR:file-path short than base [%s] < [%s]' % (file_path, base_folder))
             return
+        base_parent_folder = os.path.dirname(base_folder)
         #  store_short_path is relative folder-path correspond to it's watch folder
-        store_short_path = file_path[len(base_folder):]
+        store_short_path = file_path[len(base_parent_folder):]
         #  need to remote splash at front, or it will cause err when we join-path
         if store_short_path[:1] == '/' or store_short_path[:1] == '\\':
             store_short_path = store_short_path[1:]
@@ -429,15 +442,16 @@ class SyncHandle:
             return
         items = os.listdir(self.set_tmp_folder)
         base_dirs_name = list()
+        self.thread_lock.acquire()
         for item in items:
             full_path = os.path.join(self.set_tmp_folder, item)
             if os.path.isdir(full_path):
                 base_dirs_name.append(item)
         for base_dir_name in base_dirs_name:
             new_queue_item = dict()
-            new_queue_item['dir_path'] = base_dir_name
+            new_queue_item['dir_path'] = self.set_tmp_folder
             new_queue_item['files'] = list()
-            full_path = os.path.join(self.set_tmp_folder, base_dirs_name)
+            full_path = os.path.join(self.set_tmp_folder, base_dir_name)
             #  walk this folder, add all file to list
             for root, dirs, files in os.walk(full_path):
                 for file in files:
@@ -445,11 +459,14 @@ class SyncHandle:
                     new_queue_item['files'].append(file_path)
             #  this folder is empty, delete it
             if not len(new_queue_item['files']):
-                os.remove(full_path)
+                if not self._remove_dir_recursive(full_path):
+                    self.LogHandle.log('Failed to remove dir [%s]' % full_path)
                 #  no file found, don't need this item
                 del new_queue_item
             else:
+                self.LogHandle.log('load from tmp [%s]' % new_queue_item['dir_path'])
                 self.task_list_queue.append(new_queue_item)
+        self.thread_lock.release()
 
         pass
 
@@ -505,17 +522,7 @@ class SyncHandle:
                 if self.set_status == 2:
                     self.LogHandle.log('Thread upload stop..')
                     thread.exit()
-                if up_folder[:-1] == '\\' or up_folder[:-1] == '/':
-                    up_folder = up_folder[:-1]
-                # remote_folder = os.path.basename(up_folder)
-                # local_short_path = file_path[len(up_folder):]
-                remote_folder = up_folder
-                local_file_name = os.path.basename(file_path)
-                # if local_short_path[:1] == '\\' or up_folder[:1] == '/':
-                #     local_short_path = local_short_path[1:]
-                # self.LogHandle.log('remote_folder %s' % remote_folder)
-                # self.LogHandle.log('local_short_path %s ' % local_short_path)
-                remote_file_path = os.path.join(remote_folder, local_file_name)
+                remote_file_path = file_path[len(up_folder):]
                 if os.path.exists(file_path):
                     stat = os.stat(file_path)
                     file_size = stat.st_size
@@ -556,6 +563,7 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_quit)
     sync_mng = SyncHandle()
     sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/gif_sep_new')
+    sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/img_sep')
     sync_mng.run()
     gSyncMng = sync_mng
     while True:
