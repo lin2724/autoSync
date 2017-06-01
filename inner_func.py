@@ -290,87 +290,6 @@ class SyncHandle:
     def thread_get_speed(self):
         pass
 
-    def get_upload_task(self):
-        self.thread_lock.acquire()
-        ret_folder = ''
-        ret_file_list = list()
-        set_once_limit = 20
-        offset = 0
-        for idx in range(len(self.task_list_queue)):
-            #  clear empty task-queue
-            if not len(self.task_list_queue[idx - offset]['files']):
-                self.task_list_queue.pop(idx - offset)
-                offset += 1
-            else:
-                file_cnt = len(self.task_list_queue[idx - offset]['files'])
-                if set_once_limit > file_cnt:
-                    task_file_cnt = file_cnt
-                else:
-                    task_file_cnt = file_cnt
-                # collect files task
-                ret_folder = self.task_list_queue[idx - offset]['dir_path']
-                offset_f = 0
-                for idx_f in range(task_file_cnt):
-                    ret_file_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
-                    self.task_list_queue[idx - offset]['files'].pop(idx_f - offset_f)
-                    offset_f += 1
-                break
-
-            pass
-        self.thread_lock.release()
-        return ret_file_list, ret_folder
-        pass
-
-    def push_back_task_upload(self, task_tup):
-        pass
-
-    def thread_start(self):
-        pro = threading.Thread(target=self.thread_collect_task)
-        pro.start()
-        pro = threading.Thread(target=self.thread_guide)
-        pro.start()
-        print 'start collect task'
-        for i in range(self.set_thread_max):
-            pro = threading.Thread(target=self.thread_do_upload)
-            pro.start()
-            self.thread_list_pro.append(pro)
-            print 'start upload thread'
-        pass
-
-    def thread_guide(self):
-        while True:
-            alive_cnt = 0
-            for idx, pro in enumerate(self.thread_list_pro):
-                if not pro.is_alive() and not self.set_status:
-                    self.LogHandle.log('One thread die!!')
-                    self.thread_list_pro.pop(idx)
-                    #  check if we need to quit..
-                    if not self.set_status:
-                        pro = threading.Thread(target=self.thread_do_upload)
-                        pro.start()
-                        self.thread_list_pro.append(pro)
-                    break
-                else:
-                    alive_cnt += 1
-            if self.set_status == 2:
-                self.LogHandle.log('thread-guide stop.. ')
-                thread.exit()
-            if alive_cnt == self.set_thread_max:
-                time.sleep(10)
-            else:
-                self.LogHandle.log('Alive thread Count [%d]' % alive_cnt)
-                time.sleep(0.1)
-        pass
-
-    def move_to_tmp(self, file_path):
-        if not os.path.exists(self.set_tmp_folder):
-            os.mkdir(self.set_tmp_folder)
-        file_name = os.path.basename(file_path)
-        dst_path = os.path.join(self.set_tmp_folder, file_name)
-        os.rename(file_path, dst_path)
-        return dst_path
-        pass
-
     def thread_collect_task(self):
         min_check_len = 200
         change_list = list()
@@ -432,6 +351,147 @@ class SyncHandle:
                 self.LogHandle.log('Thread collect stop..')
                 thread.exit()
             time.sleep(5)
+        pass
+
+    def get_upload_task(self):
+        self.thread_lock.acquire()
+        ret_folder = ''
+        ret_file_list = list()
+        set_once_limit = 20
+        offset = 0
+        #  load task which is not finished last time..
+        self.load_task_from_tmp()
+        for idx in range(len(self.task_list_queue)):
+            #  clear empty task-queue
+            if not len(self.task_list_queue[idx - offset]['files']):
+                self.task_list_queue.pop(idx - offset)
+                offset += 1
+            else:
+                file_cnt = len(self.task_list_queue[idx - offset]['files'])
+                if set_once_limit > file_cnt:
+                    task_file_cnt = file_cnt
+                else:
+                    task_file_cnt = file_cnt
+                # collect files task
+                ret_folder = self.task_list_queue[idx - offset]['dir_path']
+                offset_f = 0
+                for idx_f in range(task_file_cnt):
+                    ret_file_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
+                    self.task_list_queue[idx - offset]['files'].pop(idx_f - offset_f)
+                    offset_f += 1
+                break
+
+            pass
+        self.thread_lock.release()
+        return ret_file_list, ret_folder
+        pass
+
+    def move_to_tmp(self, file_path):
+        if not os.path.exists(self.set_tmp_folder):
+            os.mkdir(self.set_tmp_folder)
+        file_name = os.path.basename(file_path)
+        dst_path = os.path.join(self.set_tmp_folder, file_name)
+        os.rename(file_path, dst_path)
+        return dst_path
+        pass
+
+    def _mkdir_recursive(self, path):
+        pardir = os.path.dirname(path)
+        if pardir == path:
+            return
+        if os.path.exists(path):
+            return
+        if not os.path.exists(pardir):
+            self._mkdir_recursive(pardir)
+        os.mkdir(path)
+
+    def move_to_tmp(self, file_path, base_folder):
+        if len(file_path) < len(base_folder):
+            self.LogHandle.log('ERROR:file-path short than base [%s] < [%s]' % (file_path, base_folder))
+            return
+        #  store_short_path is relative folder-path correspond to it's watch folder
+        store_short_path = file_path[len(base_folder):]
+        #  need to remote splash at front, or it will cause err when we join-path
+        if store_short_path[:1] == '/' or store_short_path[:1] == '\\':
+            store_short_path = store_short_path[1:]
+        #  dst_path is where it been move to tmp-folder, and store,
+        dst_path = os.path.join(self.set_tmp_folder, store_short_path)
+        #  folder_path is dst_path's parent folder, create it in case it's not exist!
+        folder_path = os.path.dirname(dst_path)
+        if not os.path.exists(folder_path):
+            self._mkdir_recursive(folder_path)
+        os.rename(file_path, dst_path)
+        return dst_path
+        pass
+
+    def load_task_from_tmp(self):
+        if not os.path.exists(self.set_tmp_folder):
+            return
+        items = os.listdir(self.set_tmp_folder)
+        base_dirs_name = list()
+        for item in items:
+            full_path = os.path.join(self.set_tmp_folder, item)
+            if os.path.isdir(full_path):
+                base_dirs_name.append(item)
+        for base_dir_name in base_dirs_name:
+            new_queue_item = dict()
+            new_queue_item['dir_path'] = base_dir_name
+            new_queue_item['files'] = list()
+            full_path = os.path.join(self.set_tmp_folder, base_dirs_name)
+            #  walk this folder, add all file to list
+            for root, dirs, files in os.walk(full_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    new_queue_item['files'].append(file_path)
+            #  this folder is empty, delete it
+            if not len(new_queue_item['files']):
+                os.remove(full_path)
+                #  no file found, don't need this item
+                del new_queue_item
+            else:
+                self.task_list_queue.append(new_queue_item)
+
+        pass
+
+    def push_back_task_upload(self, task_tup):
+        pass
+
+    def thread_start(self):
+        pro = threading.Thread(target=self.thread_collect_task)
+        pro.start()
+        pro = threading.Thread(target=self.thread_guide)
+        pro.start()
+        print 'start collect task'
+        for i in range(self.set_thread_max):
+            pro = threading.Thread(target=self.thread_do_upload)
+            pro.start()
+            self.thread_list_pro.append(pro)
+            print 'start upload thread'
+        pass
+
+    def thread_guide(self):
+        while True:
+            alive_cnt = 0
+            for idx, pro in enumerate(self.thread_list_pro):
+                if not pro.is_alive() and not self.set_status:
+                    self.LogHandle.log('One thread die!!')
+                    self.thread_list_pro.pop(idx)
+                    #  check if we need to quit..
+                    if not self.set_status:
+                        pro = threading.Thread(target=self.thread_do_upload)
+                        pro.start()
+                        self.thread_list_pro.append(pro)
+                    break
+                else:
+                    alive_cnt += 1
+            if self.set_status == 2:
+                self.LogHandle.log('thread-guide stop.. ')
+                thread.exit()
+            if alive_cnt == self.set_thread_max:
+                time.sleep(10)
+            else:
+                self.LogHandle.log('Alive thread Count [%d]' % alive_cnt)
+                time.sleep(0.1)
         pass
 
     def thread_do_upload(self, on_delete=False):
