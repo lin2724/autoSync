@@ -649,8 +649,12 @@ def signal_quit(signum, frame):
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_quit)
     sync_mng = SyncHandle()
-    sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/gif_sep_new')
-    sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/img_sep')
+    if len(sys.argv) < 1:
+        sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/gif_sep_new')
+        sync_mng.add_folder('/root/MountPoint/sda/ImgStoreTmp/img/img_sep')
+    else:
+        for folder in sys.argv[1:]:
+            sync_mng.add_folder(folder)
     sync_mng.run()
     gSyncMng = sync_mng
     while True:
