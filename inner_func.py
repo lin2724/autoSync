@@ -4,6 +4,7 @@ import threading
 import thread
 import time
 import signal
+import subprocess
 
 from bypy.bypy import *
 
@@ -145,6 +146,7 @@ class SyncHandle:
         self.ByPyHandle = ByPy
         self.LogHandle = Log(os.path.join(os.getcwd(), __file__+'.log'))  # log int cur work path
         self.set_tmp_folder = os.path.join(os.getcwd(), __file__+'_tmp')
+        self.set_failed_tmp_folder = os.path.join(os.getcwd(), __file__ + '_failed_tmp')
 
         self.folder_watch_list_cbs = list()
         self.upload_complete_cnt = 0
@@ -296,58 +298,71 @@ class SyncHandle:
         cur_base_folder = ''
         self.load_task_from_tmp()
         while True:
+
             self.thread_lock.acquire()
+
             exist_cnt = 0
             ret_folder = ''
             file_list = list()
-            for task in self.task_list_queue:
-                exist_cnt += len(task['files'])
-            if exist_cnt < min_check_len:
-                if not len(change_list):
-                    for folder_cb in self.folder_watch_list_cbs:
-                        check_change(folder_cb, change_list)
-                        if len(change_list):
-                            # use watch folder as base folder!
-                            # print 'folder_cb path [%s]' % ret_folder
-                            cur_base_folder = folder_cb['dir_path']
-                            if cur_base_folder[:-1] == '/' or cur_base_folder[:-1] == '\\':
-                                cur_base_folder = cur_base_folder[:-1]
+
+            try:
+
+                for task in self.task_list_queue:
+                    exist_cnt += len(task['files'])
+                if exist_cnt < min_check_len:
+                    if not len(change_list):
+                        for folder_cb in self.folder_watch_list_cbs:
+                            check_change(folder_cb, change_list)
+                            if len(change_list):
+                                # use watch folder as base folder!
+                                # print 'folder_cb path [%s]' % ret_folder
+                                cur_base_folder = folder_cb['dir_path']
+                                if cur_base_folder[:-1] == '/' or cur_base_folder[:-1] == '\\':
+                                    cur_base_folder = cur_base_folder[:-1]
+                                break
+                    offset = 0
+                    for idx in range(len(change_list)):
+                        objs = os.listdir(change_list[idx - offset])
+                        have_new_file = False
+                        for obj in objs:
+                            full_path = os.path.join(change_list[idx - offset], obj)
+                            if os.path.isfile(full_path):
+                                tmp_path = self.move_to_tmp(full_path, cur_base_folder)
+                                file_list.append(tmp_path)
+                                have_new_file = True
+                        if not have_new_file:
+                            change_list.pop(idx - offset)
+                            offset += 1
+                        if len(file_list):
+                            detail_folder = change_list[idx - offset][:]
+                            if len(cur_base_folder) > len(detail_folder):
+                                self.LogHandle.log('ERROR: Base folder [%s], detail_folder[%s]' % (cur_base_folder, detail_folder))
+                            else:
+                                detail_path = detail_folder[len(cur_base_folder):]
+                                if detail_path[:1] == '/' or detail_path[:1] == '\\':
+                                    detail_path = detail_path[1:]
+                                base_dir = os.path.basename(cur_base_folder)
+                                ret_folder = os.path.join(base_dir, detail_path)
+                                ret_folder = self.set_tmp_folder
                             break
-                offset = 0
-                for idx in range(len(change_list)):
-                    objs = os.listdir(change_list[idx - offset])
-                    have_new_file = False
-                    for obj in objs:
-                        full_path = os.path.join(change_list[idx - offset], obj)
-                        if os.path.isfile(full_path):
-                            tmp_path = self.move_to_tmp(full_path, cur_base_folder)
-                            file_list.append(tmp_path)
-                            have_new_file = True
-                    if not have_new_file:
-                        change_list.pop(idx - offset)
-                        offset += 1
-                    if len(file_list):
-                        detail_folder = change_list[idx - offset][:]
-                        if len(cur_base_folder) > len(detail_folder):
-                            self.LogHandle.log('ERROR: Base folder [%s], detail_folder[%s]' % (cur_base_folder, detail_folder))
-                        else:
-                            detail_path = detail_folder[len(cur_base_folder):]
-                            if detail_path[:1] == '/' or detail_path[:1] == '\\':
-                                detail_path = detail_path[1:]
-                            base_dir = os.path.basename(cur_base_folder)
-                            ret_folder = os.path.join(base_dir, detail_path)
-                            ret_folder = self.set_tmp_folder
-                        break
-                    pass
-            if len(file_list):
-                queue_dict = dict()
-                queue_dict['dir_path'] = ret_folder
-                queue_dict['files'] = file_list
-                self.task_list_queue.append(queue_dict)
-                print 'add queue to list, folder [%s], cnt [%d]' % (ret_folder, len(file_list))
-            else:
-                print 'no new files to update cur queue [%d], file_cnt [%d]' % (len(self.task_list_queue), exist_cnt)
-                # print change_list
+                        pass
+                if len(file_list):
+                    queue_dict = dict()
+                    queue_dict['dir_path'] = ret_folder
+                    queue_dict['files'] = file_list
+                    self.task_list_queue.append(queue_dict)
+                    print 'add queue to list, folder [%s], cnt [%d]' % (ret_folder, len(file_list))
+                else:
+                    print 'no new files to update cur queue [%d], file_cnt [%d]' % (len(self.task_list_queue), exist_cnt)
+                    if not len(exist_cnt):
+                        self.LogHandle.log('INFO:update queue empty,try collect from tmp and Failed folder')
+                        # self.move_from_failed_to_tmp()
+                        self.load_task_from_tmp()
+                    # print change_list
+            except:
+                e = sys.exc_info()[0]
+                self.LogHandle.log('FATAL:thread_collect_task [%s]' % e)
+
             self.thread_lock.release()
             if self.set_status == 2:
                 self.LogHandle.log('Thread collect stop..')
@@ -356,33 +371,41 @@ class SyncHandle:
         pass
 
     def get_upload_task(self):
-        self.thread_lock.acquire()
+
         ret_folder = ''
         ret_file_list = list()
         set_once_limit = 20
         offset = 0
-        #  load task which is not finished last time..
-        for idx in range(len(self.task_list_queue)):
-            #  clear empty task-queue
-            if not len(self.task_list_queue[idx - offset]['files']):
-                self.task_list_queue.pop(idx - offset)
-                offset += 1
-            else:
-                file_cnt = len(self.task_list_queue[idx - offset]['files'])
-                if set_once_limit > file_cnt:
-                    task_file_cnt = file_cnt
-                else:
-                    task_file_cnt = file_cnt
-                # collect files task
-                ret_folder = self.task_list_queue[idx - offset]['dir_path']
-                offset_f = 0
-                for idx_f in range(task_file_cnt):
-                    ret_file_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
-                    self.task_list_queue[idx - offset]['files'].pop(idx_f - offset_f)
-                    offset_f += 1
-                break
 
-            pass
+        self.thread_lock.acquire()
+
+        try:
+            #  load task which is not finished last time..
+            for idx in range(len(self.task_list_queue)):
+                #  clear empty task-queue
+                if not len(self.task_list_queue[idx - offset]['files']):
+                    self.task_list_queue.pop(idx - offset)
+                    offset += 1
+                else:
+                    file_cnt = len(self.task_list_queue[idx - offset]['files'])
+                    if set_once_limit > file_cnt:
+                        task_file_cnt = file_cnt
+                    else:
+                        task_file_cnt = file_cnt
+                    # collect files task
+                    ret_folder = self.task_list_queue[idx - offset]['dir_path']
+                    offset_f = 0
+                    for idx_f in range(task_file_cnt):
+                        ret_file_list.append(self.task_list_queue[idx - offset]['files'][idx_f - offset_f])
+                        self.task_list_queue[idx - offset]['files'].pop(idx_f - offset_f)
+                        offset_f += 1
+                    break
+
+                pass
+        except:
+            e = sys.exc_info()[0]
+            self.LogHandle.log('FATAL:get_upload_task [%s]' % e)
+
         self.thread_lock.release()
         return ret_file_list, ret_folder
         pass
@@ -437,6 +460,66 @@ class SyncHandle:
         return dst_path
         pass
 
+    def move_to_failed_tmp(self, file_path, base_folder):
+
+        if len(file_path) < len(base_folder):
+            self.LogHandle.log('ERROR:file-path short than base [%s] < [%s]' % (file_path, base_folder))
+            return
+
+        self.thread_lock.acquire()
+        dst_path = ''
+        try:
+            base_parent_folder = os.path.dirname(base_folder)
+            #  store_short_path is relative folder-path correspond to it's watch folder
+            store_short_path = file_path[len(base_parent_folder):]
+            #  need to remote splash at front, or it will cause err when we join-path
+            if store_short_path[:1] == '/' or store_short_path[:1] == '\\':
+                store_short_path = store_short_path[1:]
+            #  dst_path is where it been move to tmp-folder, and store,
+            dst_path = os.path.join(self.set_failed_tmp_folder, store_short_path)
+            #  folder_path is dst_path's parent folder, create it in case it's not exist!
+            folder_path = os.path.dirname(dst_path)
+            if not os.path.exists(folder_path):
+                self._mkdir_recursive(folder_path)
+            os.rename(file_path, dst_path)
+        except:
+            e = sys.exc_info()[0]
+            self.LogHandle.log('FATAL:move_to_failed_tmp [%s]' % e)
+
+        self.thread_lock.release()
+
+        return dst_path
+        pass
+
+    def move_from_failed_to_tmp(self):
+        if not os.path.exists(self.set_failed_tmp_folder):
+            return
+        self.thread_lock.acquire()
+        try:
+            if not os.path.exists(self.set_tmp_folder):
+                self._mkdir_recursive(self.set_tmp_folder)
+            objects = os.listdir(self.set_failed_tmp_folder)
+            for object in objects:
+                full_path = os.path.join(self.set_failed_tmp_folder, object)
+                if not os.path.isdir(full_path):
+                    continue
+                command = ['mv', '-rf', full_path, self.set_tmp_folder]
+                pipe = subprocess.Popen(args=command)
+                ret = False
+                while True:
+                    if pipe.poll() is not None:
+                        ret = pipe.returncode
+                        break
+                    time.sleep(0.2)
+                if not ret:
+                    self.LogHandle.log('Failed to move from failed to tmp [%s] [%s]' % (full_path, self.set_tmp_folder))
+            pass
+        except:
+            e = sys.exc_info()[0]
+            self.LogHandle.log('FATAL:move_from_failed_to_tmp [%s]' % e)
+        self.thread_lock.release()
+        pass
+
     def load_task_from_tmp(self):
         if not os.path.exists(self.set_tmp_folder):
             return
@@ -471,6 +554,10 @@ class SyncHandle:
         pass
 
     def push_back_task_upload(self, task_tup):
+        #  not now...
+        return
+        (file_path, folder) = task_tup
+        self.move_to_failed_tmp(file_path, folder)
         pass
 
     def thread_start(self):
