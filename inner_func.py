@@ -241,8 +241,6 @@ class SyncHandle:
                 'downloader_args': dl_args,
                 'verbose': args.verbose,
                 'debug': args.debug}
-            if Pool:
-                bypyopt['processes'] = args.processes
 
             # we construct a ByPy object here.
             # if you want to try PanAPI, simply replace ByPy with PanAPI, and all the bduss related
