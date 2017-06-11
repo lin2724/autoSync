@@ -326,8 +326,9 @@ class SyncHandle:
                             full_path = os.path.join(change_list[idx - offset], obj)
                             if os.path.isfile(full_path):
                                 tmp_path = self.move_to_tmp(full_path, cur_base_folder)
-                                file_list.append(tmp_path)
-                                have_new_file = True
+                                if len(tmp_path):
+                                    file_list.append(tmp_path)
+                                    have_new_file = True
                         if not have_new_file:
                             change_list.pop(idx - offset)
                             offset += 1
@@ -340,7 +341,7 @@ class SyncHandle:
                                 if detail_path[:1] == '/' or detail_path[:1] == '\\':
                                     detail_path = detail_path[1:]
                                 base_dir = os.path.basename(cur_base_folder)
-                                ret_folder = os.path.join(base_dir, detail_path)
+                                # ret_folder = os.path.join(base_dir, detail_path)
                                 ret_folder = self.set_tmp_folder
                             break
                         pass
@@ -352,7 +353,7 @@ class SyncHandle:
                     print 'add queue to list, folder [%s], cnt [%d]' % (ret_folder, len(file_list))
                 else:
                     print 'no new files to update cur queue [%d], file_cnt [%d]' % (len(self.task_list_queue), exist_cnt)
-                    if not len(exist_cnt):
+                    if exist_cnt <= 0:
                         self.LogHandle.log('INFO:update queue empty,try collect from tmp and Failed folder')
                         # self.move_from_failed_to_tmp()
                         self.load_task_from_tmp()
@@ -372,7 +373,7 @@ class SyncHandle:
 
         ret_folder = ''
         ret_file_list = list()
-        set_once_limit = 20
+        set_once_limit = 1
         offset = 0
 
         self.thread_lock.acquire()
@@ -441,7 +442,7 @@ class SyncHandle:
     def move_to_tmp(self, file_path, base_folder):
         if len(file_path) < len(base_folder):
             self.LogHandle.log('ERROR:file-path short than base [%s] < [%s]' % (file_path, base_folder))
-            return
+            return ''
         base_parent_folder = os.path.dirname(base_folder)
         #  store_short_path is relative folder-path correspond to it's watch folder
         store_short_path = file_path[len(base_parent_folder):]
@@ -518,21 +519,23 @@ class SyncHandle:
         self.thread_lock.release()
         pass
 
-    def load_task_from_tmp(self):
-        if not os.path.exists(self.set_tmp_folder):
+    def load_task_from_tmp(self, tmp_folder=''):
+        if not len(tmp_folder):
+            tmp_folder = self.set_tmp_folder
+        if not os.path.exists(tmp_folder):
             return
-        items = os.listdir(self.set_tmp_folder)
+        items = os.listdir(tmp_folder)
         base_dirs_name = list()
         self.thread_lock.acquire()
         for item in items:
-            full_path = os.path.join(self.set_tmp_folder, item)
+            full_path = os.path.join(tmp_folder, item)
             if os.path.isdir(full_path):
                 base_dirs_name.append(item)
         for base_dir_name in base_dirs_name:
             new_queue_item = dict()
-            new_queue_item['dir_path'] = self.set_tmp_folder
+            new_queue_item['dir_path'] = tmp_folder
             new_queue_item['files'] = list()
-            full_path = os.path.join(self.set_tmp_folder, base_dir_name)
+            full_path = os.path.join(tmp_folder, base_dir_name)
             #  walk this folder, add all file to list
             for root, dirs, files in os.walk(full_path):
                 for file in files:
